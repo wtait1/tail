@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hpcloud/tail/ratelimiter"
 	"github.com/hpcloud/tail/util"
 	"github.com/hpcloud/tail/watch"
@@ -25,15 +26,24 @@ var (
 	ErrStop = errors.New("tail should now stop")
 )
 
+// Line contains data + metadata for a single line
+// (or part of one) read from a file
 type Line struct {
-	Text string
-	Time time.Time
-	Err  error // Error from tail
+	Text        string
+	Time        time.Time
+	ChunkNumber int
+	TotalChunks int
+	GroupID     uuid.UUID
+	Err         error // Error from tail
 }
 
 // NewLine returns a Line with present time.
 func NewLine(text string) *Line {
-	return &Line{text, time.Now(), nil}
+	return &Line{
+		Text: text,
+		Time: time.Now(),
+		Err:  nil,
+	}
 }
 
 // SeekInfo represents arguments to `os.Seek`
@@ -135,7 +145,7 @@ func TailFile(filename string, config Config) (*Tail, error) {
 	return t, nil
 }
 
-// Return the file's current position, like stdio's ftell().
+// Tell returns the file's current position, like stdio's ftell().
 // But this value is not very accurate.
 // it may readed one line in the chan(tail.Lines),
 // so it may lost one line.
@@ -275,7 +285,11 @@ func (tail *Tail) tailFileSync() {
 				// file when rate limit is reached.
 				msg := ("Too much log activity; waiting a second " +
 					"before resuming tailing")
-				tail.Lines <- &Line{msg, time.Now(), errors.New(msg)}
+				tail.Lines <- &Line{
+					Text: msg,
+					Time: time.Now(),
+					Err:  errors.New(msg),
+				}
 				select {
 				case <-time.After(time.Second):
 				case <-tail.Dying():
@@ -413,8 +427,16 @@ func (tail *Tail) sendLine(line string) bool {
 		lines = util.PartitionString(line, tail.MaxLineSize)
 	}
 
-	for _, line := range lines {
-		tail.Lines <- &Line{line, now, nil}
+	lineID := uuid.New()
+	for i, line := range lines {
+		tail.Lines <- &Line{
+			Text:        line,
+			Time:        now,
+			ChunkNumber: i + 1,
+			TotalChunks: len(lines),
+			GroupID:     lineID,
+			Err:         nil,
+		}
 	}
 
 	if tail.Config.RateLimiter != nil {
